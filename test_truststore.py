@@ -4,6 +4,7 @@ import platform
 import socket
 import ssl
 import tempfile
+from dataclasses import dataclass
 
 import aiohttp
 import aiohttp.client_exceptions
@@ -21,19 +22,74 @@ socket.setdefaulttimeout(10)
 
 successful_hosts = pytest.mark.parametrize("host", ["example.com", "1.1.1.1"])
 
+
+@dataclass
+class FailureHost:
+    host: str
+    error_messages: list[str]
+
+
 failure_hosts_list = [
-    "wrong.host.badssl.com",
-    "expired.badssl.com",
-    "self-signed.badssl.com",
-    "untrusted-root.badssl.com",
-    "superfish.badssl.com",
+    FailureHost(
+        host="wrong.host.badssl.com",
+        error_messages=[
+            # OpenSSL
+            "Hostname mismatch, certificate is not valid for 'wrong.host.badssl.com'",
+            # macOS
+            "certificate name does not match",
+        ],
+    ),
+    FailureHost(
+        host="expired.badssl.com",
+        error_messages=[
+            # OpenSSL
+            "certificate has expired",
+            # macOS
+            "“*.badssl.com” certificate is expired",
+        ],
+    ),
+    FailureHost(
+        host="self-signed.badssl.com",
+        error_messages=[
+            # OpenSSL
+            "self signed certificate",
+            # macOS
+            "“*.badssl.com” certificate is not trusted",
+        ],
+    ),
+    FailureHost(
+        host="untrusted-root.badssl.com",
+        error_messages=[
+            # OpenSSL
+            "self signed certificate in certificate chain",
+            # macOS
+            "“BadSSL Untrusted Root Certificate Authority” certificate is not trusted",
+        ],
+    ),
+    FailureHost(
+        host="superfish.badssl.com",
+        error_messages=[
+            # OpenSSL
+            "unable to get local issuer certificate",
+            # macOS
+            "“superfish.badssl.com” certificate is not trusted",
+        ],
+    ),
 ]
 
 if platform.system() != "Linux":
-    failure_hosts_list.append("revoked.badssl.com")
+    failure_hosts_list.append(
+        FailureHost(
+            host="revoked.badssl.com",
+            error_messages=[
+                # macOS
+                "“revoked.badssl.com” certificate is revoked"
+            ],
+        )
+    )
 
 failure_hosts = pytest.mark.parametrize(
-    "host",
+    "failure",
     failure_hosts_list,
 )
 
@@ -67,12 +123,16 @@ def test_success(host):
 
 
 @failure_hosts
-def test_failures(host):
+def test_failures(failure):
+    host = failure.host
     if platform.system() == "Linux" and host == "revoked.badssl.com":
         pytest.skip("Linux currently doesn't support CRLs")
 
-    with pytest.raises(ssl.SSLCertVerificationError):
+    with pytest.raises(ssl.SSLCertVerificationError) as e:
         connect_to_host(host)
+
+    error_repr = repr(e.value)
+    assert any(message in error_repr for message in failure.error_messages), error_repr
 
 
 @successful_hosts
@@ -101,7 +161,8 @@ async def test_sslcontext_api_success_async(host):
 
 
 @failure_hosts
-def test_sslcontext_api_failures(host):
+def test_sslcontext_api_failures(failure):
+    host = failure.host
     if platform.system() == "Linux" and host == "revoked.badssl.com":
         pytest.skip("Linux currently doesn't support CRLs")
 
@@ -115,7 +176,8 @@ def test_sslcontext_api_failures(host):
 
 @failure_hosts
 @pytest.mark.asyncio
-async def test_sslcontext_api_failures_async(host):
+async def test_sslcontext_api_failures_async(failure):
+    host = failure.host
     if platform.system() == "Linux" and host == "revoked.badssl.com":
         pytest.skip("Linux currently doesn't support CRLs")
 
